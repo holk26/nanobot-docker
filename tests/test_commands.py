@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 from unittest.mock import patch
@@ -6,6 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from nanobot.cli.commands import app
+from nanobot.config.loader import load_config
 from nanobot.config.schema import Config
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.providers.openai_codex_provider import _strip_model_prefix
@@ -128,3 +130,30 @@ def test_litellm_provider_canonicalizes_github_copilot_hyphen_prefix():
 def test_openai_codex_strip_prefix_supports_hyphen_and_underscore():
     assert _strip_model_prefix("openai-codex/gpt-5.1-codex") == "gpt-5.1-codex"
     assert _strip_model_prefix("openai_codex/gpt-5.1-codex") == "gpt-5.1-codex"
+
+
+def test_load_config_reads_nanobot_env_vars(tmp_path):
+    """NANOBOT_ prefixed env vars must be picked up by load_config (no config file)."""
+    nonexistent = tmp_path / "no_config.json"
+    env = {
+        "NANOBOT_PROVIDERS__ANTHROPIC__API_KEY": "sk-test-from-env",
+        "NANOBOT_AGENTS__DEFAULTS__MODEL": "anthropic/claude-3-haiku",
+    }
+    with patch.dict(os.environ, env, clear=False):
+        config = load_config(config_path=nonexistent)
+
+    assert config.providers.anthropic.api_key == "sk-test-from-env"
+    assert config.agents.defaults.model == "anthropic/claude-3-haiku"
+
+
+def test_load_config_file_takes_precedence_over_nanobot_env_vars(tmp_path):
+    """Config file values must override NANOBOT_ env vars."""
+    import json
+
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({"providers": {"anthropic": {"apiKey": "sk-from-file"}}}))
+    env = {"NANOBOT_PROVIDERS__ANTHROPIC__API_KEY": "sk-from-env"}
+    with patch.dict(os.environ, env, clear=False):
+        config = load_config(config_path=config_file)
+
+    assert config.providers.anthropic.api_key == "sk-from-file"

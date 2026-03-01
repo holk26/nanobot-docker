@@ -47,7 +47,7 @@ def load_config(config_path: Path | None = None) -> Config:
             data = {}
 
     data = _apply_provider_env_vars(data)
-    return Config.model_validate(data)
+    return Config(**data)
 
 
 def _apply_provider_env_vars(data: dict) -> dict:
