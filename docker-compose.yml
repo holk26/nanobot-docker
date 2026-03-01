@@ -2,8 +2,17 @@ x-common-config: &common-config
   build:
     context: .
     dockerfile: Dockerfile
-  volumes:
-    - ~/.nanobot:/root/.nanobot
+  # Option A: mount your local config directory (for local Docker setups)
+  # volumes:
+  #   - ~/.nanobot:/root/.nanobot
+  #
+  # Option B: configure via environment variables (recommended for cloud deployments)
+  # Set your provider API key directly — any standard provider key is supported:
+  #   ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, etc.
+  # Uncomment and set the key for the provider you use, e.g.:
+  # environment:
+  #   - ANTHROPIC_API_KEY=sk-ant-...
+  #   - OPENROUTER_API_KEY=sk-or-...
 
 services:
   nanobot-gateway:
