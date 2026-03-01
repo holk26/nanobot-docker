@@ -198,6 +198,165 @@ def onboard():
 
 
 
+def _needs_setup(config: Config) -> bool:
+    """Return True when no provider API key or OAuth token is available."""
+    from nanobot.providers.registry import PROVIDERS, find_by_name
+
+    model = config.agents.defaults.model
+    provider_name = config.get_provider_name(model)
+
+    # OAuth-based providers (Codex, Copilot) never need an API key
+    if provider_name:
+        spec = find_by_name(provider_name)
+        if spec and spec.is_oauth:
+            return False
+
+    # Custom provider with explicit api_base is intentional (may have no key)
+    if provider_name == "custom":
+        return False
+
+    # Bedrock uses IAM auth, not an API key
+    if model.startswith("bedrock/"):
+        return False
+
+    p = config.get_provider(model)
+    if p and p.api_key:
+        return False
+
+    # Check all providers for any configured key as a final fallback
+    for spec in PROVIDERS:
+        if spec.is_oauth or spec.is_local:
+            continue
+        prov = getattr(config.providers, spec.name, None)
+        if prov and prov.api_key:
+            return False
+
+    return True
+
+
+_SETUP_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nanobot — Setup</title>
+<style>
+  body{{font-family:system-ui,sans-serif;max-width:560px;margin:60px auto;padding:0 20px;color:#1a1a1a}}
+  h1{{font-size:1.6rem;margin-bottom:4px}}
+  p.sub{{color:#555;margin-top:0}}
+  label{{display:block;margin-top:18px;font-weight:600;font-size:.9rem}}
+  select,input[type=text],input[type=password]{{width:100%;padding:8px 10px;margin-top:4px;
+    border:1px solid #ccc;border-radius:6px;font-size:1rem;box-sizing:border-box}}
+  button{{margin-top:24px;width:100%;padding:10px;background:#2563eb;color:#fff;
+    border:none;border-radius:6px;font-size:1rem;cursor:pointer}}
+  button:hover{{background:#1d4ed8}}
+  .note{{margin-top:28px;font-size:.85rem;color:#666;border-top:1px solid #eee;padding-top:16px}}
+  .ok{{background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:16px;margin-top:20px}}
+  .ok h2{{margin:0 0 6px;color:#16a34a}}
+</style>
+</head>
+<body>
+{body}
+</body>
+</html>
+"""
+
+_SETUP_FORM = """
+<h1>🤖 nanobot Setup</h1>
+<p class="sub">No API key found. Enter one below to get started.</p>
+<form method="post" action="/">
+  <label for="provider">Provider</label>
+  <select id="provider" name="provider">
+    <option value="openrouter">OpenRouter (supports many models)</option>
+    <option value="anthropic">Anthropic (Claude)</option>
+    <option value="openai">OpenAI (GPT)</option>
+    <option value="deepseek">DeepSeek</option>
+    <option value="gemini">Google Gemini</option>
+    <option value="groq">Groq</option>
+  </select>
+  <label for="api_key">API Key</label>
+  <input type="password" id="api_key" name="api_key" placeholder="sk-..." required>
+  <button type="submit">Save API Key</button>
+</form>
+<div class="note">
+  You can also set the key as an environment variable:<br>
+  <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, …<br>
+  or via <code>NANOBOT_PROVIDERS__&lt;PROVIDER&gt;__API_KEY</code> in Dokploy / Docker.
+</div>
+"""
+
+_SETUP_OK = """
+<h1>🤖 nanobot Setup</h1>
+<div class="ok">
+  <h2>✓ Configuration saved</h2>
+  <p>Restart the gateway to apply your new API key.</p>
+</div>
+<div class="note">In Docker / Dokploy, stop and start the container (or redeploy).</div>
+"""
+
+
+async def _run_setup_server(host: str, port: int) -> None:
+    """Serve a minimal HTML setup page until the user saves an API key."""
+    import urllib.parse
+
+    from nanobot.config.loader import get_config_path, load_config, save_config
+
+    _MAX_REQUEST_BYTES = 16 * 1024  # 16 KB — enough for any reasonable form POST
+
+    saved = False
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        nonlocal saved
+        try:
+            raw = await asyncio.wait_for(reader.read(_MAX_REQUEST_BYTES), timeout=10)
+            text = raw.decode("utf-8", errors="replace")
+            lines = text.split("\r\n")
+            request_line = lines[0] if lines else ""
+            method = request_line.split(" ")[0] if request_line else "GET"
+
+            if method == "POST":
+                body_part = text.split("\r\n\r\n", 1)[-1] if "\r\n\r\n" in text else ""
+                params = urllib.parse.parse_qs(body_part)
+                provider = (params.get("provider") or ["openrouter"])[0]
+                api_key = (params.get("api_key") or [""])[0].strip()
+                if api_key:
+                    config_path = get_config_path()
+                    cfg = load_config(config_path if config_path.exists() else None)
+                    prov_obj = getattr(cfg.providers, provider, None)
+                    if prov_obj is not None:
+                        prov_obj.api_key = api_key
+                    save_config(cfg)
+                    saved = True
+                page = _SETUP_HTML.format(body=_SETUP_OK if api_key else _SETUP_FORM)
+            else:
+                page = _SETUP_HTML.format(body=_SETUP_FORM)
+
+            body = page.encode("utf-8")
+            response = (
+                f"HTTP/1.1 200 OK\r\n"
+                f"Content-Type: text/html; charset=utf-8\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                f"Connection: close\r\n\r\n"
+            ).encode() + body
+            writer.write(response)
+            await writer.drain()
+        except (asyncio.TimeoutError, UnicodeDecodeError, OSError):
+            pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(handle, host, port)
+    console.print(f"[yellow]⚙  Setup required.[/yellow] Open [cyan]http://{host}:{port}[/cyan] to configure nanobot.")
+    console.print("[dim]Waiting for API key...[/dim]")
+    async with server:
+        await server.start_serving()
+        while not saved:
+            await asyncio.sleep(0.5)
+    console.print("[green]✓[/green] API key saved. Please restart the gateway.")
+
+
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
     from nanobot.providers.custom_provider import CustomProvider
@@ -264,6 +423,13 @@ def gateway(
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
 
     config = load_config()
+
+    # If no API key is configured, serve a browser-based setup wizard instead of crashing
+    if _needs_setup(config):
+        host = config.gateway.host
+        asyncio.run(_run_setup_server(host, port))
+        return
+
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
     provider = _make_provider(config)
