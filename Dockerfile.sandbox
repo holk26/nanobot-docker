@@ -60,5 +60,7 @@ EXPOSE 18790
 # Set default shell to bash
 SHELL ["/bin/bash", "-c"]
 
-# By default, start an interactive shell (can be overridden)
-ENTRYPOINT ["/bin/bash"]
+# Entrypoint: script interactivo para pedir datos críticos si faltan
+COPY entrypoint-interactive.sh /entrypoint-interactive.sh
+RUN chmod +x /entrypoint-interactive.sh
+ENTRYPOINT ["/entrypoint-interactive.sh"]
