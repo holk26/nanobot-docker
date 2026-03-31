@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  nanobot:
+    image: nanobot:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "18790:18790"
+    environment:
+      - TZ=UTC
+    env_file:
+      - .env
+    volumes:
+      - nanobot_data:/root/.nanobot
+      - nanobot_logs:/app/logs
+    deploy:
+      mode: replicated
+      replicas: 3
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    networks:
+      - nanobot-net
+
+volumes:
+  nanobot_data:
+    driver: local
+  nanobot_logs:
+    driver: local
+
+networks:
+  nanobot-net:
+    driver: bridge
